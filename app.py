@@ -21,6 +21,8 @@ from src.wc2026 import (get_wc2026_matches, compute_group_standings,
                         get_qualified_teams, get_remaining_matches,
                         GROUPS, display as wc_display)
 from src.wc2026_patches import PATCHES, apply_patches
+from src.wc2026_simulator import run_simulation, save_simulation, load_simulation, get_top_contenders
+from src.value_betting import analyze_match_value, calculate_value
 from src.odds_features import (get_api_key, fetch_wc2026_odds, load_odds_cache,
                                 get_match_odds, blend_elo_with_odds, odds_cache_is_fresh)
 from src.knockout_logic import (
@@ -177,7 +179,7 @@ for col, val, lbl in [(c1, f"{n_matches:,}", "partidos"), (c2, str(n_teams), "se
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_pred, tab_wc, tab_rank, tab_stats, tab_h2h, tab_info = st.tabs(["🎯 Predecir", "🌎 Mundial 2026", "🏆 Ranking", "📊 Estadísticas", "⚔️ H2H", "ℹ️ Info"])
+tab_pred, tab_wc, tab_sim, tab_value, tab_rank, tab_stats, tab_h2h, tab_info = st.tabs(["🎯 Predecir", "🌎 Mundial 2026", "🎲 Simulador", "💰 Valor", "🏆 Ranking", "📊 Estadísticas", "⚔️ H2H", "ℹ️ Info"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1: PREDICCIÓN
@@ -839,6 +841,198 @@ with tab_wc:
             for _, r in cdf.iterrows():
                 color = "#21d060" if r["Pos"]<=2 else "#f85149"
                 st.markdown(f'<div style="display:flex;gap:0.5rem;padding:0.25rem 0"><span style="color:{color}">{"🟢" if r["Pos"]<=2 else "🔴"}</span><span>Grupo {r["Grupo"]} #{r["Pos"]}</span><strong>{r["Equipo"]}</strong><span style="color:#8b949e">{r["Pts"]}pts</span></div>', unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB SIMULADOR DEL MUNDIAL
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_sim:
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#1a2744,#0d1117);border:1px solid #21d060;
+                border-radius:12px;padding:1rem;text-align:center;margin-bottom:1rem">
+      <div style="font-size:1.2rem;font-weight:800;color:#21d060">🎲 Simulador Monte Carlo</div>
+      <div style="font-size:0.78rem;color:#8b949e">3,000 Mundiales simulados · Actualizado con estado actual de grupos</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Cargar o generar simulación
+    @st.cache_data(show_spinner="🎲 Simulando 3,000 Mundiales...", ttl=3600)
+    def get_simulation():
+        from src.wc2026 import get_wc2026_matches, compute_group_standings, get_remaining_matches, GROUPS
+        from src.model import predict_match
+        from src.wc2026_simulator import run_simulation
+
+        raw_wc = get_wc2026_matches(raw_df)
+        raw_wc_r = raw_wc.copy()
+        raw_wc_r["result"] = raw_wc_r.apply(
+            lambda r: "H" if r["home_score"]>r["away_score"] else ("D" if r["home_score"]==r["away_score"] else "A"), axis=1)
+        standings_s = compute_group_standings(raw_wc_r)
+        remaining = get_remaining_matches(raw_wc_r)
+
+        j3_probs = {}
+        for m in remaining:
+            h, a = m["home"], m["away"]
+            p = predict_match(h, a, features, "FIFA World Cup", True,
+                             clf, reg, feature_cols, clf_elite, elite_cols,
+                             statsbomb_summary, reg_h, reg_a)
+            j3_probs[(h,a)] = (p["prob_home"], p["prob_draw"], p["prob_away"])
+
+        pts = {}; gf = {}; ga = {}
+        for g, table in standings_s.items():
+            for _, row in table.iterrows():
+                t = row["team"]; pts[t]=int(row["Pts"]); gf[t]=int(row["GF"]); ga[t]=int(row["GA"])
+
+        return run_simulation(GROUPS, pts, gf, ga, j3_probs, elo_map, n_sim=3000, seed=42)
+
+    sim_results = get_simulation()
+    top_teams = get_top_contenders(sim_results, 48)
+
+    # Filtro
+    sim_filter = st.radio("Mostrar", ["Top 16", "Top 32", "Todos"], horizontal=True)
+    n_show = {"Top 16": 16, "Top 32": 32, "Todos": 48}[sim_filter]
+    show_teams = [t for t in top_teams if t["champion"] > 0][:n_show]
+
+    st.markdown('<div class="section-title">Probabilidad de avanzar por ronda</div>', unsafe_allow_html=True)
+
+    for i, t in enumerate(show_teams, 1):
+        team = t["team"]
+        champ = t["champion"]
+        final = t["final"]
+        sf = t["sf"]
+        qf = t["qf"]
+        r16 = t["r16"]
+        elo_val = elo_map.get(team, 1500)
+
+        # Color según probabilidad de campeón
+        if champ >= 0.15: bar_color = "#21d060"
+        elif champ >= 0.05: bar_color = "#58a6ff"
+        elif champ >= 0.01: bar_color = "#d29922"
+        else: bar_color = "#484f58"
+
+        st.markdown(f"""
+        <div style="background:#161b22;border-radius:8px;padding:0.6rem 0.8rem;margin:0.2rem 0;
+                    border-left:3px solid {bar_color}">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <span style="font-weight:700;font-size:0.9rem">{i}. {team}</span>
+              <span style="color:#484f58;font-size:0.7rem;margin-left:0.5rem">Elo {elo_val:.0f}</span>
+            </div>
+            <span style="font-size:1.1rem;font-weight:800;color:{bar_color}">🏆 {champ:.1%}</span>
+          </div>
+          <div style="display:flex;gap:1rem;margin-top:0.3rem;font-size:0.75rem;color:#8b949e;font-family:monospace">
+            <span>Final: <strong style="color:#e6edf3">{final:.1%}</strong></span>
+            <span>SF: <strong style="color:#e6edf3">{sf:.1%}</strong></span>
+            <span>QF: <strong style="color:#e6edf3">{qf:.1%}</strong></span>
+            <span>R16: <strong style="color:#e6edf3">{r16:.1%}</strong></span>
+          </div>
+          <div style="background:#21262d;border-radius:3px;height:4px;margin-top:0.4rem">
+            <div style="background:{bar_color};width:{min(100,champ*300)}%;height:100%;border-radius:3px;max-width:100%"></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown(f'<div style="font-size:0.72rem;color:#484f58;margin-top:0.8rem;text-align:center">3,000 simulaciones Monte Carlo · Incluye jornada 3 pendiente · Bracket según cruces FIFA 2026</div>', unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB ANÁLISIS DE VALOR EN CUOTAS
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_value:
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#1a1a2e,#0d1117);border:1px solid #58a6ff;
+                border-radius:12px;padding:1rem;text-align:center;margin-bottom:1rem">
+      <div style="font-size:1.2rem;font-weight:800;color:#58a6ff">💰 Análisis de Valor</div>
+      <div style="font-size:0.78rem;color:#8b949e">Compara la probabilidad del modelo vs las cuotas del mercado</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="pred-card" style="font-size:0.8rem;color:#8b949e;margin-bottom:1rem">
+      <strong style="color:#e6edf3">¿Qué es el valor?</strong><br>
+      Cuando el modelo dice 50% y la cuota implica 35%, hay un <strong style="color:#21d060">+15% de edge</strong>.
+      Significa que la cuota está mejor pagada de lo que debería. Los apostadores profesionales
+      buscan este tipo de situaciones sistemáticamente.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="section-title">Analizar un partido</div>', unsafe_allow_html=True)
+
+    v_home = st.selectbox("🏠 Local", team_list, key="v_home",
+                          index=team_list.index("Argentina") if "Argentina" in team_list else 0)
+    v_away = st.selectbox("✈️ Visitante", team_list, key="v_away",
+                          index=team_list.index("France") if "France" in team_list else 1)
+    v_neutral = st.toggle("Campo neutral", value=True, key="v_neutral")
+
+    st.markdown('<div class="section-title">Cuotas del mercado (opcional)</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.75rem;color:#8b949e;margin-bottom:0.5rem">Ingresa las cuotas decimales de tu casa de apuestas (ej: 2.50 = paga 2.5x la apuesta)</div>', unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        odds_h = st.number_input(f"Cuota {v_home[:8]}", min_value=1.01, max_value=50.0, value=2.00, step=0.05, format="%.2f")
+    with col2:
+        odds_d = st.number_input("Cuota Empate", min_value=1.01, max_value=50.0, value=3.20, step=0.05, format="%.2f")
+    with col3:
+        odds_a = st.number_input(f"Cuota {v_away[:8]}", min_value=1.01, max_value=50.0, value=3.80, step=0.05, format="%.2f")
+
+    if v_home != v_away:
+        if st.button("🔍 Analizar valor", key="v_analyze"):
+            with st.spinner("Calculando..."):
+                from src.knockout_logic import full_match_prediction
+                base_v = predict_match(v_home, v_away, features, "FIFA World Cup",
+                                       v_neutral, clf, reg, feature_cols, clf_elite,
+                                       elite_cols, statsbomb_summary, reg_h, reg_a)
+                # Blend con cuotas si las hay en caché
+                match_odds_v = get_match_odds(v_home, v_away, odds_cache)
+                if match_odds_v:
+                    from src.odds_features import blend_elo_with_odds
+                    elo_p = {"prob_home": base_v["prob_home"], "prob_draw": base_v["prob_draw"], "prob_away": base_v["prob_away"]}
+                    blended_v = blend_elo_with_odds(elo_p, match_odds_v)
+                    ph, pd, pa = blended_v["prob_home"], blended_v["prob_draw"], blended_v["prob_away"]
+                else:
+                    ph, pd, pa = base_v["prob_home"], base_v["prob_draw"], base_v["prob_away"]
+
+                analysis = analyze_match_value(ph, pd, pa, odds_h, odds_d, odds_a)
+
+            # Mostrar resultado
+            colors_map = {"home": ("#21d060", v_home), "draw": ("#d29922", "Empate"), "away": ("#f85149", v_away)}
+            for side, (color, label) in colors_map.items():
+                v = analysis[side]
+                bg = "#0d2818" if v["edge"] > 0.02 else "#161b22"
+                border = color if v["edge"] > 0.02 else "#30363d"
+                ev_str = f"{v['ev']:+.2f}"
+                edge_str = f"{v['edge']:+.1%}"
+
+                st.markdown(f"""
+                <div style="background:{bg};border:1px solid {border};border-radius:10px;
+                            padding:0.8rem;margin:0.4rem 0">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div>
+                      <span style="font-weight:700;color:{color}">{label}</span>
+                      <span style="font-size:0.75rem;color:#8b949e;margin-left:0.5rem">{v['recommendation']}</span>
+                    </div>
+                    <span style="font-family:monospace;font-size:1rem;font-weight:700;
+                                 color:{'#21d060' if v['edge']>0.02 else '#8b949e'}">
+                      Cuota {v['market_odds']:.2f}
+                    </span>
+                  </div>
+                  <div style="display:flex;gap:1.5rem;margin-top:0.4rem;font-size:0.78rem;font-family:monospace;color:#8b949e">
+                    <span>Modelo: <strong style="color:{color}">{v['model_prob']:.0%}</strong></span>
+                    <span>Mercado: <strong style="color:#e6edf3">{v['implied_prob']:.0%}</strong></span>
+                    <span>Edge: <strong style="color:{'#21d060' if v['edge']>0 else '#f85149'}">{edge_str}</strong></span>
+                    <span>EV: <strong style="color:{'#21d060' if v['ev']>0 else '#f85149'}">{ev_str}</strong></span>
+                  </div>
+                  {"<div style='font-size:0.72rem;color:#21d060;margin-top:0.3rem'>Kelly stake recomendado: " + f"{v['kelly_stake']:.1%}" + " del bankroll</div>" if v['kelly_stake']>0.005 else ""}
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Advertencia legal
+            st.markdown("""
+            <div style="font-size:0.7rem;color:#484f58;margin-top:0.8rem;padding:0.5rem;
+                        background:#0d1117;border-radius:6px;text-align:center">
+              ⚠️ Este análisis es informativo. Las apuestas conllevan riesgo de pérdida.
+              El edge del modelo es una estimación estadística, no una garantía.
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

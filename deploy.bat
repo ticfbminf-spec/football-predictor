@@ -22,7 +22,7 @@ git push
 echo.
 echo ================================================
 echo   Listo! Streamlit redeploya en ~1 minuto
-echo   URL: https://ticfbminf-spec-football-p-downloadsfootball-predictorapp-xvmsmj.streamlit.app
+echo   URL: https://ticfbminf-spec-football-predictor-app-mmtrhw.streamlit.app
 echo ================================================
 echo.
 pause
