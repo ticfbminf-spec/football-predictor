@@ -123,7 +123,7 @@ def get_trained_model(features_df):
         return (metrics["clf"], metrics["reg"], metrics["feature_cols"],
                 metrics["clf_elite"], metrics["elite_cols"],
                 metrics.get("reg_h"), metrics.get("reg_a"), metrics)
-    return clf, reg, feature_cols, clf_elite, elite_cols, None
+    return clf, reg, feature_cols, clf_elite, elite_cols, reg_h, reg_a, None
 
 @st.cache_data(show_spinner="📊 Cargando xG StatsBomb...")
 def get_statsbomb():
