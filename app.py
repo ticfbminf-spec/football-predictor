@@ -1112,8 +1112,19 @@ with tab_stats:
             res = "W" if gf > ga else ("D" if gf == ga else "L")
             return res, gf, ga
 
-        stats_rows = team_matches.apply(lambda r: pd.Series(match_result_for_team(r, sel_team), index=["res","gf","ga"]), axis=1)
-        team_matches = team_matches.join(stats_rows)
+        res_list, gf_list, ga_list = [], [], []
+        for _, row in team_matches.iterrows():
+            if row["home_team"] == sel_team:
+                gf, ga = row["home_score"], row["away_score"]
+            else:
+                gf, ga = row["away_score"], row["home_score"]
+            res = "W" if gf > ga else ("D" if gf == ga else "L")
+            res_list.append(res); gf_list.append(gf); ga_list.append(ga)
+
+        team_matches = team_matches.copy()
+        team_matches["res"] = res_list
+        team_matches["gf"]  = gf_list
+        team_matches["ga"]  = ga_list
 
         total = len(team_matches)
         wins  = (team_matches["res"] == "W").sum()
